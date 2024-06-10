@@ -1,5 +1,5 @@
 on: [push]
-
+permissions: write-all
 jobs:
   hello_frizbee:
     runs-on: ubuntu-latest

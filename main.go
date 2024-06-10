@@ -49,13 +49,11 @@ func main() {
 	frizbeeAction, err := initAction(ctx)
 	if err != nil {
 		log.Fatalf("Error initializing action: %v", err)
-		os.Exit(1)
 	}
 
 	err = frizbeeAction.Run(ctx)
 	if err != nil {
 		log.Fatalf("Error running action: %v", err)
-		os.Exit(1)
 	}
 }
 
@@ -112,7 +110,11 @@ func (fa *FrizbeeAction) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse image files: %w", err)
 	}
-	runCommand("git", "status")
+
+	if fa.OpenPR {
+		commitAndPushChanges()
+		createPullRequest()
+	}
 	return nil
 }
 
@@ -186,4 +188,35 @@ func runCommand(name string, args ...string) {
 	if err != nil {
 		log.Fatalf("Failed to run command %s %v: %v", name, args, err)
 	}
+}
+
+func commitAndPushChanges() {
+	// Configure git
+	runCommand("git", "config", "--global", "--add", "safe.directory", "/github/workspace")
+	runCommand("git", "config", "--global", "user.name", "frizbee-action[bot]")
+	runCommand("git", "config", "--global", "user.email", "frizbee-action[bot]@users.noreply.github.com")
+
+	// Get git status
+	runCommand("git", "status")
+
+	// Create a new branch
+	branchName := "modify-workflows"
+	runCommand("git", "checkout", "-b", branchName)
+
+	// Add changes
+	runCommand("git", "add", ".github/workflows")
+
+	// Commit changes
+	runCommand("git", "commit", "-m", "frizbee: pin images and actions to commit hash")
+
+	// Push changes
+	runCommand("git", "push", "origin", branchName, "--force")
+}
+
+func createPullRequest() {
+	title := "Frizbee: Pin images and actions to commit hash"
+	body := "This PR pins images and actions to the commit hash"
+	head := "modify-workflows"
+	base := "main"
+	runCommand("gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base)
 }
