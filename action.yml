@@ -8,7 +8,30 @@ inputs:
   GITHUB_TOKEN:
     description: "GitHub token"
     required: true
-
+  actions:
+    description: "Actions to correct"
+    required: false
+    default: ".github/workflows"
+  dockerfiles:
+    description: "Dockerfiles to correct"
+    required: false
+    default: "Dockerfile"
+  kubernetes:
+    description: "Kubernetes manifests to correct"
+    required: false
+    default: ""
+  docker_compose:
+    description: "Docker Compose files to correct"
+    required: false
+    default: ""
+  open_pr:
+    description: "Open a PR with the changes"
+    required: false
+    default: "true"
+  silent:
+    description: "Silent mode"
+    required: false
+    default: "false"
 runs:
   using: "docker"
   image: "Dockerfile"
