@@ -26,6 +26,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -152,25 +153,25 @@ func (fa *FrizbeeAction) processOutput(res *replacer.ReplaceResult, baseDir stri
 	bfs := osfs.New(baseDir, osfs.WithBoundOS())
 	// Print the processed files
 	for _, path := range res.Processed {
-		log.Printf("Processed file: %s", path)
+		log.Printf("Processed file: %s", filepath.Base(path))
 	}
 	// Print the modified files
 	for path, content := range res.Modified {
-		log.Printf("Modified file: %s", path)
+		log.Printf("Modified file: %s", filepath.Base(path))
 		log.Printf("Modified content:\n%s\n", content)
 		if fa.OpenPR {
-			f, err := bfs.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0644)
+			f, err := bfs.OpenFile(filepath.Base(path), os.O_WRONLY|os.O_TRUNC, 0644)
 			if err != nil {
-				return fmt.Errorf("failed to open file %s: %w", path, err)
+				return fmt.Errorf("failed to open file %s: %w", filepath.Base(path), err)
 			}
 			defer func() {
 				if err := f.Close(); err != nil {
-					log.Fatalf("failed to close file %s: %v", path, err) // nolint:errcheck
+					log.Fatalf("failed to close file %s: %v", filepath.Base(path), err) // nolint:errcheck
 				}
 			}()
 			_, err = fmt.Fprintf(f, "%s", content)
 			if err != nil {
-				return fmt.Errorf("failed to write to file %s: %w", path, err)
+				return fmt.Errorf("failed to write to file %s: %w", filepath.Base(path), err)
 			}
 		}
 	}
