@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/google/go-github/v60/github"
@@ -39,24 +40,34 @@ type FrizbeeAction struct {
 	KubernetesPath    string
 	DockerComposePath string
 	OpenPR            bool
-	Silent            bool
+	FailOnUnpinned    bool
 	ActionsReplacer   *replacer.Replacer
 	ImagesReplacer    *replacer.Replacer
 }
 
+// ErrUnpinnedFound is the error returned when unpinned actions or container images are found
+var ErrUnpinnedFound = errors.New("frizbee found unpinned actions or container images")
+
 func main() {
 	ctx := context.Background()
+	// Initialize the frizbee action
 	frizbeeAction, err := initAction(ctx)
 	if err != nil {
 		log.Fatalf("Error initializing action: %v", err)
 	}
 
+	// Run the frizbee action
 	err = frizbeeAction.Run(ctx)
 	if err != nil {
+		if errors.Is(err, ErrUnpinnedFound) {
+			log.Printf("Unpinned actions or container images found. Check the Frizbee Action logs for more information.")
+			os.Exit(1)
+		}
 		log.Fatalf("Error running action: %v", err)
 	}
 }
 
+// initAction initializes the frizbee action - reads the environment variables, creates the GitHub client, etc.
 func initAction(ctx context.Context) (*FrizbeeAction, error) {
 	// Get the GitHub token from the environment
 	token := os.Getenv("GITHUB_TOKEN")
@@ -80,7 +91,7 @@ func initAction(ctx context.Context) (*FrizbeeAction, error) {
 		return nil, fmt.Errorf("GITHUB_REPOSITORY environment variable is not set")
 	}
 
-	// Read the action settings from the environment
+	// Read the action settings from the environment and create the new frizbee replacers for actions and images
 	return &FrizbeeAction{
 		client:            github.NewClient(tc),
 		RepoOwner:         repoOwner,
@@ -90,81 +101,107 @@ func initAction(ctx context.Context) (*FrizbeeAction, error) {
 		KubernetesPath:    os.Getenv("INPUT_KUBERNETES"),
 		DockerComposePath: os.Getenv("INPUT_DOCKER_COMPOSE"),
 		OpenPR:            os.Getenv("INPUT_OPEN_PR") == "true",
-		Silent:            os.Getenv("INPUT_SILENT") == "true",
+		FailOnUnpinned:    os.Getenv("INPUT_FAIL_ON_UNPINNED") == "true",
 		ActionsReplacer:   replacer.NewGitHubActionsReplacer(&config.Config{}).WithGitHubClientFromToken(token),
 		ImagesReplacer:    replacer.NewContainerImagesReplacer(&config.Config{}),
 	}, nil
 }
 
+// Run runs the frizbee action
 func (fa *FrizbeeAction) Run(ctx context.Context) error {
 	// Parse the workflow files
-	log.Println("Parsing workflow files")
-	err := fa.parseWorkflowActions(ctx)
+	modified, err := fa.parseWorkflowActions(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to parse workflow files: %w", err)
 	}
-	log.Println("Parsing images")
 
-	// Parse the image files
-	err = fa.parseImages(ctx)
+	// Parse all yaml/yml files referencing container images
+	m, err := fa.parseImages(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to parse image files: %w", err)
 	}
 
-	if fa.OpenPR {
+	// Set the modified flag to true if any file was modified
+	modified = modified || m
+
+	// If the OpenPR flag is set, commit and push the changes and create a pull request
+	if fa.OpenPR && modified {
+		// TODO: use the git library to commit and push changes
+		// TODO: perhaps refactor the code so instead of having 1 commit, we have separate commits for each file that
+		// TODO: frizbee modified
 		commitAndPushChanges()
 		createPullRequest()
 	}
+
+	// Exit with ErrUnpinnedFound error if any files were modified and the action is set to fail on unpinned
+	if fa.FailOnUnpinned && modified {
+		return ErrUnpinnedFound
+	}
+
 	return nil
 }
 
-func (fa *FrizbeeAction) parseImages(ctx context.Context) error {
+// parseWorkflowActions parses the GitHub Actions workflow files and updates the modified files if the OpenPR flag is set
+func (fa *FrizbeeAction) parseWorkflowActions(ctx context.Context) (bool, error) {
+	if fa.ActionsPath == "" {
+		log.Printf("Workflow path is empty")
+		return false, nil
+	}
+
+	log.Printf("Parsing workflow files in %s...", fa.ActionsPath)
+	res, err := fa.ActionsReplacer.ParsePath(ctx, fa.ActionsPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse workflow files in %s: %w", fa.ActionsPath, err)
+	}
+
+	return fa.processOutput(res, fa.ActionsPath)
+}
+
+// parseImages parses the Dockerfiles, Docker Compose, and Kubernetes files for container images.
+// It also updates the files if the OpenPR flag is set
+func (fa *FrizbeeAction) parseImages(ctx context.Context) (bool, error) {
+	var modified bool
 	pathsToParse := []string{fa.DockerfilesPath, fa.DockerComposePath, fa.KubernetesPath}
 	for _, path := range pathsToParse {
 		if path == "" {
 			continue
 		}
-		log.Printf("Parsing files in %s", path)
+		log.Printf("Parsing files for container images in %s", path)
 		res, err := fa.ImagesReplacer.ParsePath(ctx, path)
 		if err != nil {
-			return fmt.Errorf("failed to parse: %w", err)
+			return false, fmt.Errorf("failed to parse: %w", err)
 		}
-		err = fa.processOutput(res, path)
+		// Process the parsing output
+		m, err := fa.processOutput(res, path)
 		if err != nil {
-			return fmt.Errorf("failed to process output: %w", err)
+			return false, fmt.Errorf("failed to process output: %w", err)
 		}
+		// Set the modified flag to true if any file was modified
+		modified = modified || m
 	}
-	return nil
+	return modified, nil
 }
 
-func (fa *FrizbeeAction) parseWorkflowActions(ctx context.Context) error {
-	if fa.ActionsPath == "" {
-		log.Printf("No workflow files to parse")
-		return nil
-	}
-
-	log.Printf("Parsing workflow files in %s", fa.ActionsPath)
-	res, err := fa.ActionsReplacer.ParsePath(ctx, ".github/workflows")
-	if err != nil {
-		return fmt.Errorf("failed to parse workflow files: %w", err)
-	}
-	return fa.processOutput(res, fa.ActionsPath)
-}
-
-func (fa *FrizbeeAction) processOutput(res *replacer.ReplaceResult, baseDir string) error {
+// processOutput processes the output of a replacer, prints the processed and modified files and writes the
+// changes to the files
+func (fa *FrizbeeAction) processOutput(res *replacer.ReplaceResult, baseDir string) (bool, error) {
+	var modified bool
 	bfs := osfs.New(baseDir, osfs.WithBoundOS())
-	// Print the processed files
+
+	// Show the processed files
 	for _, path := range res.Processed {
 		log.Printf("Processed file: %s", filepath.Base(path))
 	}
-	// Print the modified files
+
+	// Process the modified files
 	for path, content := range res.Modified {
 		log.Printf("Modified file: %s", filepath.Base(path))
 		log.Printf("Modified content:\n%s\n", content)
+		// Overwrite the content of the file with the changes if the OpenPR flag is set
 		if fa.OpenPR {
 			f, err := bfs.OpenFile(filepath.Base(path), os.O_WRONLY|os.O_TRUNC, 0644)
 			if err != nil {
-				return fmt.Errorf("failed to open file %s: %w", filepath.Base(path), err)
+				return modified, fmt.Errorf("failed to open file %s: %w", filepath.Base(path), err)
 			}
 			defer func() {
 				if err := f.Close(); err != nil {
@@ -173,11 +210,13 @@ func (fa *FrizbeeAction) processOutput(res *replacer.ReplaceResult, baseDir stri
 			}()
 			_, err = fmt.Fprintf(f, "%s", content)
 			if err != nil {
-				return fmt.Errorf("failed to write to file %s: %w", filepath.Base(path), err)
+				return modified, fmt.Errorf("failed to write to file %s: %w", filepath.Base(path), err)
 			}
+			// Set the modified flag to true if any file was modified
+			modified = true
 		}
 	}
-	return nil
+	return modified, nil
 }
 
 func runCommand(name string, args ...string) {
@@ -204,10 +243,13 @@ func commitAndPushChanges() {
 	runCommand("git", "checkout", "-b", branchName)
 
 	// Add changes
-	runCommand("git", "add", ".github/workflows")
+	runCommand("git", "add", ".")
 
 	// Commit changes
 	runCommand("git", "commit", "-m", "frizbee: pin images and actions to commit hash")
+
+	// Show the changes
+	runCommand("git", "show")
 
 	// Push changes
 	runCommand("git", "push", "origin", branchName, "--force")
@@ -215,7 +257,7 @@ func commitAndPushChanges() {
 
 func createPullRequest() {
 	title := "Frizbee: Pin images and actions to commit hash"
-	body := "This PR pins images and actions to the commit hash"
+	body := "This PR pins images and actions to their commit hash"
 	head := "modify-workflows"
 	base := "main"
 	runCommand("gh", "pr", "create", "--title", title, "--body", body, "--head", head, "--base", base)

@@ -28,8 +28,8 @@ inputs:
     description: "Open a PR with the changes"
     required: false
     default: "true"
-  silent:
-    description: "Silent mode"
+  fail_on_unpinned:
+    description: "Fail if an unpinned action/image is found"
     required: false
     default: "false"
 runs:
