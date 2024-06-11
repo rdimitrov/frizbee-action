@@ -5,9 +5,6 @@ branding:
   icon: "at-sign"
   color: "green"
 inputs:
-  GITHUB_TOKEN:
-    description: "GitHub token"
-    required: true
   actions:
     description: "Actions to correct"
     required: false

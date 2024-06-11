@@ -1,11 +1,9 @@
 on:
   push:
   workflow_dispatch:
-
 permissions: write-all
-
 jobs:
-  frizbee_action_test:
+  test:
     runs-on: ubuntu-latest
     steps:
       # To use this repository's private action,
@@ -16,9 +14,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          actions: tests/workflows
-          dockerfiles: tests/dockerfiles
-          kubernetes: tests/k8s
-          docker_compose: tests/docker_compose
-          open_pr: true
-          fail_on_unpinned: true
